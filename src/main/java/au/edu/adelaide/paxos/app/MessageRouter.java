@@ -7,6 +7,9 @@ import au.edu.adelaide.paxos.roles.impl.DefaultProposer;
 import au.edu.adelaide.paxos.transport.TransportClient;
 import au.edu.adelaide.paxos.util.Log;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 public final class MessageRouter {
     private final MemberId me;
     private final NetworkProfile profile;
@@ -15,6 +18,9 @@ public final class MessageRouter {
     private final DefaultProposer proposer; // so we can notify on PROMISE/ACCEPTED
     private final TransportClient net;
     private final Log log;
+
+    private final Set<String> decidedBroadcasted = ConcurrentHashMap.newKeySet();
+    private final Set<String> decideSeen = ConcurrentHashMap.newKeySet();
 
     public MessageRouter(MemberId me, NetworkProfile profile,
                          Acceptor acceptor, Learner learner,
@@ -34,8 +40,12 @@ public final class MessageRouter {
                 net.send(m.from(), reply);
             }
             case PROMISE -> {
-                log.info("PROMISE from " + m.from().value() + " for n=" + m.proposalNumber());
-                proposer.onPromise(m.proposalNumber());
+                // In your PROMISE, proposalNumber = n_a (may be empty), value = v_a (may be empty)
+                log.info("PROMISE from " + m.from().value()
+                        + " n_a=" + (m.proposalNumber() == null ? "" : m.proposalNumber())
+                        + " v_a=" + (m.value() == null ? "" : m.value()));
+                // Pass n_a and v_a to the proposer; proposer knows its current round (curN)
+                proposer.onPromise(m.proposalNumber(), m.value());
             }
             case ACCEPT_REQUEST -> {
                 var reply = acceptor.onAcceptRequest(m);
@@ -44,14 +54,29 @@ public final class MessageRouter {
             case ACCEPTED -> {
                 var decided = learner.onAccepted(m);
                 if (decided != null) {
-                    log.info("CONSENSUS: " + decided + " has been elected Council President!");
-                    // broadcast DECIDE for completeness
-                    net.broadcast(new Message(MessageType.DECIDE, me, null, m.proposalNumber(), decided));
+                    String key = m.proposalNumber(); // or proposalNumber + ":" + decided
+                    if (decidedBroadcasted.add(key)) {
+                        log.info("CONSENSUS: " + decided + " has been elected Council President!");
+                        net.broadcast(new Message(MessageType.DECIDE, me, null, m.proposalNumber(), decided));
+                    }
                 }
                 proposer.onAccepted(m.proposalNumber());
             }
-            case DECIDE -> log.info("DECIDE received: " + m.value());
-            case NACK -> log.info("NACK from " + m.from().value() + " suggested n_p=" + m.proposalNumber());
+
+            case DECIDE -> {
+                String key = m.proposalNumber() + ":" + m.value();
+                if (decideSeen.add(key)) {
+                    log.info("DECIDE received: " + m.value());
+                }
+                // optional: tell local learner so it stops tallying
+                // learner.forceDecide(m.proposalNumber(), m.value());
+            }
+
+            case NACK -> {
+                // In your NACK, proposalNumber carries n_p (the acceptor’s highest promised)
+                log.info("NACK from " + m.from().value() + " suggested n_p=" + m.proposalNumber());
+                proposer.onNack(m.proposalNumber());
+            }
         }
     }
 }

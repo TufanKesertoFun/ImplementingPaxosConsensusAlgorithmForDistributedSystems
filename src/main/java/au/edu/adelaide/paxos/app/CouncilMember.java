@@ -18,14 +18,19 @@ import java.io.InputStreamReader;
 public final class CouncilMember {
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
-            System.err.println("Usage: Mx --profile reliable|standard|latent|failure [--config path]");
+            System.err.println("Usage: Mx --profile reliable|standard|latent|failure [--config path] [--propose <candidate>]");
             System.exit(1);
         }
         var me = new MemberId(args[0]);
         var profileName = args[1].equals("--profile") ? args[2] : "standard";
         var cfgPath = "src/main/resources/network.config";
-        for (int i = 0; i < args.length-1; i++)
-            if (args[i].equals("--config")) cfgPath = args[i+1];
+
+        String autoPropose = null; // <-- add
+
+        for (int i = 0; i < args.length - 1; i++) {
+            if (args[i].equals("--config"))   cfgPath = args[i+1];
+            if (args[i].equals("--propose"))  autoPropose = args[i+1]; // <-- add
+        }
 
         NetworkProfile profile = switch (profileName.toLowerCase()) {
             case "reliable" -> new ReliableProfile();
@@ -50,7 +55,13 @@ public final class CouncilMember {
         server.start(router::onLine);
         log.info("Started on port " + serverEntry.port() + " with profile " + profileName);
 
-        // stdin = propose a candidate (e.g., "M5")
+        // <-- NEW: auto-propose if requested
+        if (autoPropose != null && !autoPropose.isBlank()) {
+            log.info("Auto-proposing candidate: " + autoPropose);
+            proposer.propose(autoPropose);
+        }
+
+        // stdin = propose a candidate interactively (still supported)
         try (var br = new BufferedReader(new InputStreamReader(System.in))) {
             String line;
             while ((line = br.readLine()) != null) {
