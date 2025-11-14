@@ -1,9 +1,18 @@
 param(
-  [Parameter(Mandatory=$true)][int]$port,
-  [Parameter(Mandatory=$true)][string]$line
+    [Parameter(Mandatory = $true)]
+    [int]$port,
+
+    [Parameter(Mandatory = $true)]
+    [string]$line
 )
 
-$client = New-Object Net.Sockets.TcpClient("127.0.0.1", $port)
-$sw = New-Object IO.StreamWriter($client.GetStream()); $sw.AutoFlush = $true
-$sw.WriteLine($line)
-$sw.Dispose(); $client.Dispose()
+$client = New-Object System.Net.Sockets.TcpClient("localhost", $port)
+$stream = $client.GetStream()
+$writer = New-Object System.IO.StreamWriter($stream)
+$writer.AutoFlush = $true
+
+$writer.WriteLine($line)
+
+$writer.Dispose()
+$stream.Dispose()
+$client.Close()

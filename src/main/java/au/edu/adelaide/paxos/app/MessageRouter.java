@@ -15,7 +15,7 @@ public final class MessageRouter {
     private final NetworkProfile profile;
     private final Acceptor acceptor;
     private final Learner learner;
-    private final DefaultProposer proposer; // so we can notify on PROMISE/ACCEPTED
+    private final DefaultProposer proposer; // notify proposer on PROMISE/ACCEPTED/NACK
     private final TransportClient net;
     private final Log log;
 
@@ -29,6 +29,17 @@ public final class MessageRouter {
         this.learner = learner; this.proposer = proposer; this.net = net; this.log = log;
     }
 
+    // --- small helpers for key=value payloads like "na=1.4;va=M5;v=M5;np=2.6" ---
+    private static String kv(String payload, String key) {
+        if (payload == null || payload.isBlank()) return "";
+        for (String pair : payload.split(";")) {
+            String[] p = pair.split("=", 2);
+            if (p.length == 2 && p[0].trim().equals(key)) return p[1].trim();
+        }
+        return "";
+    }
+
+    @SuppressWarnings("DuplicatedCode")
     public void onLine(String line) {
         if (profile.shouldDrop()) return;
         profile.maybeDelay();
@@ -36,46 +47,75 @@ public final class MessageRouter {
         var m = Message.decode(line);
         switch (m.type()) {
             case PREPARE -> {
+                // PREPARE|from|to|n|
+                log.info("PREPARE from " + m.from().value() + " n=" + m.proposalNumber());
                 var reply = acceptor.onPrepare(m);
                 net.send(m.from(), reply);
             }
+
             case PROMISE -> {
-                // In your PROMISE, proposalNumber = n_a (may be empty), value = v_a (may be empty)
+                // PROMISE|from|to|n|na=<n_a>;va=<v_a>
+                var n   = m.proposalNumber(); // the PREPARE round this promise refers to
+                var na  = kv(m.value(), "na");
+                var va  = kv(m.value(), "va");
                 log.info("PROMISE from " + m.from().value()
-                        + " n_a=" + (m.proposalNumber() == null ? "" : m.proposalNumber())
-                        + " v_a=" + (m.value() == null ? "" : m.value()));
-                // Pass n_a and v_a to the proposer; proposer knows its current round (curN)
-                proposer.onPromise(m.proposalNumber(), m.value());
+                        + " for n=" + n
+                        + "  n_a=" + na
+                        + "  v_a=" + va);
+                // Let proposer handle quorum/adoption; proposer parses na/va from payload
+                proposer.onPromise(n, m.value());
             }
+
             case ACCEPT_REQUEST -> {
+                // ACCEPT_REQUEST|from|to|n|v=<value>
+                var v = kv(m.value(), "v");
+                log.info("ACCEPT_REQUEST from " + m.from().value()
+                        + " n=" + m.proposalNumber()
+                        + "  v=" + v);
                 var reply = acceptor.onAcceptRequest(m);
                 net.send(m.from(), reply);
             }
+
             case ACCEPTED -> {
+                // ACCEPTED|from|to|n|v=<value>
+                var v = kv(m.value(), "v");
+                log.info("ACCEPTED from " + m.from().value()
+                        + " n=" + m.proposalNumber()
+                        + "  v=" + v);
+
                 var decided = learner.onAccepted(m);
                 if (decided != null) {
-                    String key = m.proposalNumber(); // or proposalNumber + ":" + decided
+                    String key = m.proposalNumber() + ":" + decided;
                     if (decidedBroadcasted.add(key)) {
                         log.info("CONSENSUS: " + decided + " has been elected Council President!");
-                        net.broadcast(new Message(MessageType.DECIDE, me, null, m.proposalNumber(), decided));
+                        // Tell everyone explicitly
+                        net.broadcast(new Message(
+                                MessageType.DECIDE, me, null, m.proposalNumber(), "v=" + decided
+                        ));
                     }
                 }
                 proposer.onAccepted(m.proposalNumber());
             }
 
             case DECIDE -> {
-                String key = m.proposalNumber() + ":" + m.value();
+                // DECIDE|from|to|n|v=<value>
+                var v = kv(m.value(), "v");
+                String key = m.proposalNumber() + ":" + v;
                 if (decideSeen.add(key)) {
-                    log.info("DECIDE received: " + m.value());
+                    // Print the exact rubric-required line on every node
+                    log.info("CONSENSUS: " + v + " has been elected Council President!");
                 }
-                // optional: tell local learner so it stops tallying
-                // learner.forceDecide(m.proposalNumber(), m.value());
+                // Optionally: nudge learner to settle immediately (no-op if already decided)
+                // learner.onAccepted(new Message(MessageType.ACCEPTED, m.from(), m.to(), m.proposalNumber(), "v=" + v));
             }
 
             case NACK -> {
-                // In your NACK, proposalNumber carries n_p (the acceptor’s highest promised)
-                log.info("NACK from " + m.from().value() + " suggested n_p=" + m.proposalNumber());
-                proposer.onNack(m.proposalNumber());
+                // Either old style: proposalNumber carried n_p
+                // Or new style: payload has np=<n_p>
+                var np = kv(m.value(), "np");
+                if (np.isBlank()) np = m.proposalNumber() == null ? "" : m.proposalNumber();
+                log.info("NACK from " + m.from().value() + "  n_p=" + np);
+                proposer.onNack(np);
             }
         }
     }

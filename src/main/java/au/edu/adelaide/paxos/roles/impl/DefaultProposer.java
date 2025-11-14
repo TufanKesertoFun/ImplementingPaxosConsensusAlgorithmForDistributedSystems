@@ -9,7 +9,7 @@ import au.edu.adelaide.paxos.transport.TransportClient;
 
 /**
  * Single-decree Paxos proposer for the council president election.
- * Emits ACCEPT_REQUEST and "ACCEPTED quorum" logs at most once per round.
+ * Uses text protocol: proposalNumber = n, value = key=value pairs.
  */
 public final class DefaultProposer implements Proposer {
 
@@ -64,24 +64,28 @@ public final class DefaultProposer implements Proposer {
         this.curN = n.toString();
 
         System.out.printf("[%s] [PROPOSER] PREPARE n=%s (want=%s)%n", me.value(), curN, proposedValue);
-        net.broadcast(new Message(MessageType.PREPARE, me, null, curN, null));
+        // PREPARE carries n, empty payload
+        net.broadcast(new Message(MessageType.PREPARE, me, null, curN, ""));
     }
 
     /**
-     * Called when a PROMISE arrives.
-     * @param n_a acceptor's previously-accepted proposal number (may be null/empty)
-     * @param v_a acceptor's previously-accepted value (may be null/empty)
+     * New format: called when a PROMISE arrives.
+     * @param promisedN the PREPARE round this promise refers to (must equal curN to count)
+     * @param payload   key=value pairs containing "na" and "va" (both may be empty)
      */
-    public synchronized void onPromise(String n_a, String v_a) {
-        // Only tally for our current round; older messages are harmlessly counted but guards prevent duplicates
+    public synchronized void onPromise(String promisedN, String payload) {
+        // Only tally for our current round (critical for safety)
+        if (promisedN == null || !promisedN.equals(curN)) return;
+
         promiseTally++;
 
-        // Track highest n_a to adopt its v_a if any accepted value exists
-        if (n_a != null && !n_a.isBlank()) {
-            var na = ProposalNumber.parse(n_a);
+        String naStr = kv(payload, "na");
+        String vaStr = kv(payload, "va");
+        if (!naStr.isBlank()) {
+            var na = ProposalNumber.parse(naStr);
             if (highestNaSeen == null || na.compareTo(highestNaSeen) > 0) {
                 highestNaSeen = na;
-                adoptedValue  = (v_a == null || v_a.isBlank()) ? null : v_a;
+                adoptedValue  = vaStr.isBlank() ? null : vaStr;
             }
         }
 
@@ -89,7 +93,9 @@ public final class DefaultProposer implements Proposer {
             var chosen = (adoptedValue != null) ? adoptedValue : proposedValue;
             System.out.printf("[%s] [PROPOSER] PROMISE quorum for n=%s -> ACCEPT_REQUEST(%s)%n",
                     me.value(), curN, chosen);
-            net.broadcast(new Message(MessageType.ACCEPT_REQUEST, me, null, curN, chosen));
+            net.broadcast(new Message(
+                    MessageType.ACCEPT_REQUEST, me, null, curN, "v=" + chosen
+            ));
             sentAcceptForCurN = true; // emit once
         }
     }
@@ -104,10 +110,15 @@ public final class DefaultProposer implements Proposer {
         }
     }
 
-    /** Called when a NACK arrives; suggestedNp carries acceptor’s highest promised n_p. */
-    public synchronized void onNack(String suggestedNp) {
-        if (suggestedNp == null || suggestedNp.isBlank()) return;
-        var np = ProposalNumber.parse(suggestedNp);
+    /** Called when a NACK arrives; supports payload "np=..." or legacy raw n_p string. */
+    public synchronized void onNack(String suggestedNpOrPayload) {
+        String npStr = suggestedNpOrPayload;
+        if (npStr != null && npStr.contains("=")) {
+            npStr = kv(suggestedNpOrPayload, "np");
+        }
+        if (npStr == null || npStr.isBlank()) return;
+
+        var np = ProposalNumber.parse(npStr);
 
         int myId = Integer.parseInt(me.value().substring(1));
         // Ensure our next counter is strictly greater than n_p
@@ -125,6 +136,16 @@ public final class DefaultProposer implements Proposer {
         this.curN = n.toString();
 
         System.out.printf("[%s] [PROPOSER] NACK -> retry PREPARE with n=%s%n", me.value(), curN);
-        net.broadcast(new Message(MessageType.PREPARE, me, null, curN, null));
+        net.broadcast(new Message(MessageType.PREPARE, me, null, curN, ""));
+    }
+
+    // ---- helpers ----
+    private static String kv(String payload, String key) {
+        if (payload == null) return "";
+        for (String kv : payload.split(";")) {
+            String[] p = kv.split("=", 2);
+            if (p.length == 2 && p[0].trim().equals(key)) return p[1].trim();
+        }
+        return "";
     }
 }
