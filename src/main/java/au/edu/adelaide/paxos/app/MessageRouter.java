@@ -10,7 +10,12 @@ import au.edu.adelaide.paxos.util.Log;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Routes incoming text protocol lines to the correct Paxos role
+ * (Proposer, Acceptor, Learner) and handles DECIDE broadcast logic.
+ */
 public final class MessageRouter {
+
     private final MemberId me;
     private final NetworkProfile profile;
     private final Acceptor acceptor;
@@ -22,26 +27,64 @@ public final class MessageRouter {
     private final Set<String> decidedBroadcasted = ConcurrentHashMap.newKeySet();
     private final Set<String> decideSeen = ConcurrentHashMap.newKeySet();
 
-    public MessageRouter(MemberId me, NetworkProfile profile,
-                         Acceptor acceptor, Learner learner,
-                         DefaultProposer proposer, TransportClient net, Log log) {
-        this.me = me; this.profile = profile; this.acceptor = acceptor;
-        this.learner = learner; this.proposer = proposer; this.net = net; this.log = log;
+    /**
+     * Creates a new message router for this member.
+     *
+     * @param me       this member's identifier
+     * @param profile  network profile controlling delay and drops
+     * @param acceptor local acceptor role
+     * @param learner  local learner role
+     * @param proposer local proposer used for callbacks
+     * @param net      transport client for unicast/broadcast
+     * @param log      logger for human-readable tracing
+     */
+    public MessageRouter(MemberId me,
+                         NetworkProfile profile,
+                         Acceptor acceptor,
+                         Learner learner,
+                         DefaultProposer proposer,
+                         TransportClient net,
+                         Log log) {
+        this.me = me;
+        this.profile = profile;
+        this.acceptor = acceptor;
+        this.learner = learner;
+        this.proposer = proposer;
+        this.net = net;
+        this.log = log;
     }
 
-    // --- small helpers for key=value payloads like "na=1.4;va=M5;v=M5;np=2.6" ---
+    /**
+     * Extracts a {@code key=value} pair from a semicolon-separated payload string.
+     *
+     * @param payload raw payload (e.g. {@code "na=1.4;va=M5"})
+     * @param key     key to look for
+     * @return trimmed value or empty string if not present
+     */
     private static String kv(String payload, String key) {
-        if (payload == null || payload.isBlank()) return "";
+        if (payload == null || payload.isBlank()) {
+            return "";
+        }
         for (String pair : payload.split(";")) {
             String[] p = pair.split("=", 2);
-            if (p.length == 2 && p[0].trim().equals(key)) return p[1].trim();
+            if (p.length == 2 && p[0].trim().equals(key)) {
+                return p[1].trim();
+            }
         }
         return "";
     }
 
+    /**
+     * Handles a single decoded line of text protocol from the transport layer.
+     * Applies network profile (drop/delay) and dispatches to appropriate role.
+     *
+     * @param line serialized message line (without trailing newline)
+     */
     @SuppressWarnings("DuplicatedCode")
     public void onLine(String line) {
-        if (profile.shouldDrop()) return;
+        if (profile.shouldDrop()) {
+            return;
+        }
         profile.maybeDelay();
 
         var m = Message.decode(line);
@@ -55,9 +98,9 @@ public final class MessageRouter {
 
             case PROMISE -> {
                 // PROMISE|from|to|n|na=<n_a>;va=<v_a>
-                var n   = m.proposalNumber(); // the PREPARE round this promise refers to
-                var na  = kv(m.value(), "na");
-                var va  = kv(m.value(), "va");
+                var n = m.proposalNumber(); // the PREPARE round this promise refers to
+                var na = kv(m.value(), "na");
+                var va = kv(m.value(), "va");
                 log.info("PROMISE from " + m.from().value()
                         + " for n=" + n
                         + "  n_a=" + na
@@ -113,9 +156,15 @@ public final class MessageRouter {
                 // Either old style: proposalNumber carried n_p
                 // Or new style: payload has np=<n_p>
                 var np = kv(m.value(), "np");
-                if (np.isBlank()) np = m.proposalNumber() == null ? "" : m.proposalNumber();
+                if (np.isBlank()) {
+                    np = m.proposalNumber() == null ? "" : m.proposalNumber();
+                }
                 log.info("NACK from " + m.from().value() + "  n_p=" + np);
                 proposer.onNack(np);
+            }
+
+            default -> {
+                // No default action; all known types are covered above.
             }
         }
     }

@@ -35,19 +35,38 @@ public final class DefaultProposer implements Proposer {
     private boolean sentAcceptForCurN = false;
     private boolean announcedAcceptedForCurN = false;
 
+    /**
+     * Creates a new proposer bound to a member id.
+     *
+     * @param me      current member id
+     * @param members number of members in the cluster
+     * @param net     transport client used to send and broadcast messages
+     */
     public DefaultProposer(MemberId me, int members, TransportClient net) {
         this.me = me;
         this.members = members;
         this.net = net;
     }
 
+    /**
+     * Generates the next proposal number for this proposer.
+     *
+     * @return new {@link ProposalNumber}
+     */
     private ProposalNumber nextN() {
         localCounter++;
         int proposerId = Integer.parseInt(me.value().substring(1)); // "M4" -> 4
         return new ProposalNumber(localCounter, proposerId);
     }
 
-    private int quorum() { return members / 2 + 1; }
+    /**
+     * Calculates the quorum size based on the number of members.
+     *
+     * @return quorum threshold
+     */
+    private int quorum() {
+        return members / 2 + 1;
+    }
 
     @Override
     public synchronized void propose(String candidate) {
@@ -56,7 +75,7 @@ public final class DefaultProposer implements Proposer {
         this.promiseTally = 0;
         this.acceptedTally = 0;
         this.highestNaSeen = null;
-        this.adoptedValue  = null;
+        this.adoptedValue = null;
         this.sentAcceptForCurN = false;
         this.announcedAcceptedForCurN = false;
 
@@ -69,13 +88,16 @@ public final class DefaultProposer implements Proposer {
     }
 
     /**
-     * New format: called when a PROMISE arrives.
+     * Handles a PROMISE message for a given PREPARE round.
+     *
      * @param promisedN the PREPARE round this promise refers to (must equal curN to count)
      * @param payload   key=value pairs containing "na" and "va" (both may be empty)
      */
     public synchronized void onPromise(String promisedN, String payload) {
         // Only tally for our current round (critical for safety)
-        if (promisedN == null || !promisedN.equals(curN)) return;
+        if (promisedN == null || !promisedN.equals(curN)) {
+            return;
+        }
 
         promiseTally++;
 
@@ -85,7 +107,7 @@ public final class DefaultProposer implements Proposer {
             var na = ProposalNumber.parse(naStr);
             if (highestNaSeen == null || na.compareTo(highestNaSeen) > 0) {
                 highestNaSeen = na;
-                adoptedValue  = vaStr.isBlank() ? null : vaStr;
+                adoptedValue = vaStr.isBlank() ? null : vaStr;
             }
         }
 
@@ -100,9 +122,15 @@ public final class DefaultProposer implements Proposer {
         }
     }
 
-    /** Called when an ACCEPTED arrives. */
+    /**
+     * Called when an ACCEPTED message arrives.
+     *
+     * @param n proposal number string this ACCEPTED refers to
+     */
     public synchronized void onAccepted(String n) {
-        if (!n.equals(curN)) return; // ignore old/foreign rounds
+        if (!n.equals(curN)) {
+            return; // ignore old/foreign rounds
+        }
         acceptedTally++;
         if (acceptedTally >= quorum() && !announcedAcceptedForCurN) {
             System.out.printf("[%s] [PROPOSER] ACCEPTED quorum for n=%s%n", me.value(), n);
@@ -110,13 +138,19 @@ public final class DefaultProposer implements Proposer {
         }
     }
 
-    /** Called when a NACK arrives; supports payload "np=..." or legacy raw n_p string. */
+    /**
+     * Called when a NACK arrives; supports payload "np=..." or legacy raw n_p string.
+     *
+     * @param suggestedNpOrPayload encoded n_p value or payload containing np
+     */
     public synchronized void onNack(String suggestedNpOrPayload) {
         String npStr = suggestedNpOrPayload;
         if (npStr != null && npStr.contains("=")) {
             npStr = kv(suggestedNpOrPayload, "np");
         }
-        if (npStr == null || npStr.isBlank()) return;
+        if (npStr == null || npStr.isBlank()) {
+            return;
+        }
 
         var np = ProposalNumber.parse(npStr);
 
@@ -128,7 +162,7 @@ public final class DefaultProposer implements Proposer {
         this.promiseTally = 0;
         this.acceptedTally = 0;
         this.highestNaSeen = null;
-        this.adoptedValue  = null;
+        this.adoptedValue = null;
         this.sentAcceptForCurN = false;
         this.announcedAcceptedForCurN = false;
 
@@ -139,12 +173,22 @@ public final class DefaultProposer implements Proposer {
         net.broadcast(new Message(MessageType.PREPARE, me, null, curN, ""));
     }
 
-    // ---- helpers ----
+    /**
+     * Helper to parse a value from a semicolon-separated key=value payload.
+     *
+     * @param payload raw payload string
+     * @param key     key to search for
+     * @return extracted value or empty string
+     */
     private static String kv(String payload, String key) {
-        if (payload == null) return "";
+        if (payload == null) {
+            return "";
+        }
         for (String kv : payload.split(";")) {
             String[] p = kv.split("=", 2);
-            if (p.length == 2 && p[0].trim().equals(key)) return p[1].trim();
+            if (p.length == 2 && p[0].trim().equals(key)) {
+                return p[1].trim();
+            }
         }
         return "";
     }

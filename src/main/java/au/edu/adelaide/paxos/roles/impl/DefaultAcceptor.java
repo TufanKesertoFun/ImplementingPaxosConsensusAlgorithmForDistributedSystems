@@ -3,6 +3,9 @@ package au.edu.adelaide.paxos.roles.impl;
 import au.edu.adelaide.paxos.core.*;
 import au.edu.adelaide.paxos.roles.Acceptor;
 
+/**
+ * Default Paxos acceptor implementation maintaining promised and accepted state.
+ */
 public final class DefaultAcceptor implements Acceptor {
 
     private ProposalNumber n_p; // highest promised
@@ -63,9 +66,16 @@ public final class DefaultAcceptor implements Acceptor {
         );
     }
 
-    // ---- helpers ----
+    /**
+     * Helper to extract {@code v=} from payload or return the raw payload as legacy value.
+     *
+     * @param payload raw payload string
+     * @return extracted candidate value
+     */
     private static String extractV(String payload) {
-        if (payload == null || payload.isBlank()) return "";
+        if (payload == null || payload.isBlank()) {
+            return "";
+        }
         int idx = payload.indexOf("v=");
         if (idx >= 0) {
             return payload.substring(idx + 2).trim();
